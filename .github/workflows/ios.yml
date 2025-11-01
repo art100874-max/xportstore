@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -23,30 +23,55 @@ jobs:
           python -m pip install --upgrade pip
           pip install briefcase
 
-      - name: Create iOS project
+      - name: Create iOS project (Briefcase)
         run: |
           briefcase create iOS
 
-      - name: Build iOS app
+      - name: Build iOS project (Briefcase)
         run: |
           briefcase build iOS
 
-      - name: Export unsigned IPA (for testing)
+      # ---- Archive with xcodebuild for generic iOS device (no simulator) ----
+      - name: Archive (xcodebuild)
         run: |
+          set -e
           APP_NAME="$(python - <<'PY'
 from pathlib import Path
-apps = [p.name for p in Path("build").iterdir() if p.is_dir()]
+# Папка приложения внутри build/* (Briefcase создаёт одну)
+apps=[p.name for p in Path("build").iterdir() if p.is_dir()]
 print(apps[0])
 PY
 )"
+          PROJ="build/${APP_NAME}/ios/${APP_NAME}.xcodeproj"
+          SCHEME="${APP_NAME}"
+          ARCHIVE_DIR="$PWD/build/${APP_NAME}/ios/build"
+          ARCHIVE_PATH="${ARCHIVE_DIR}/${APP_NAME}.xcarchive"
+
+          xcodebuild -project "$PROJ" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            clean archive \
+            -archivePath "$ARCHIVE_PATH"
+
+      # ---- Pack unsigned IPA from .xcarchive (для проверки пайплайна) ----
+      - name: Export unsigned IPA
+        run: |
+          set -e
+          APP_NAME="$(python - <<'PY'
+from pathlib import Path
+apps=[p.name for p in Path("build").iterdir() if p.is_dir()]
+print(apps[0])
+PY
+)"
+          ARCHIVE_PATH="$PWD/build/${APP_NAME}/ios/build/${APP_NAME}.xcarchive"
           EXPORT_DIR="$PWD/build/${APP_NAME}/ios/export"
           mkdir -p "$EXPORT_DIR/Payload"
-          cp -R "$PWD/build/${APP_NAME}/ios/build/Debug-iphonesimulator/${APP_NAME}.app" "$EXPORT_DIR/Payload/"
+          cp -R "$ARCHIVE_PATH/Products/Applications/${APP_NAME}.app" "$EXPORT_DIR/Payload/"
           cd "$EXPORT_DIR"
-          zip -r "${APP_NAME}-unsigned.ipa" Payload
+          /usr/bin/zip -r "${APP_NAME}-unsigned.ipa" Payload
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XPortStore-unsigned
-          path: build/*/ios/export/*.ipa
+          name: XPor
