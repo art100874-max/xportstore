@@ -1,0 +1,64 @@
+# This project was generated with 0.3.25 using template: https://github.com/beeware/briefcase-template @ v0.3.25
+[tool.briefcase]
+project_name = "X-Port - техника и аксессуары"
+bundle = "ru.xportstore"
+version = "1.0.0"
+url = "https://xportstore.ru"
+license.file = "LICENSE"
+author = "X-Port"
+author_email = "info@xportstore.ru"
+home = "https://xportstore.ru"
+
+[tool.briefcase.app.xportstore]
+formal_name = "X-Port - техника и аксессуары"
+description = "Мобильное приложение магазина X-Port"
+long_description = """Мобильное приложение интернет-магазина X-Port: техника и аксессуары.
+"""
+sources = [
+    "src/xportstore",
+]
+# Путь к иконке 512×512 PNG
+icon = "src/xportstore/resources/icon.png"
+
+test_sources = [
+    "tests",
+]
+requires = []
+test_requires = ["pytest"]
+
+[tool.briefcase.app.xportstore.macOS]
+universal_build = true
+requires = [
+    "toga-cocoa~=0.5.0",
+    "std-nslog~=1.0.3",
+]
+
+[tool.briefcase.app.xportstore.linux]
+requires = [
+    "toga-gtk~=0.5.0",
+    "pygobject < 3.52.1",
+]
+
+[tool.briefcase.app.xportstore.windows]
+requires = [
+    "toga-winforms~=0.5.0",
+]
+
+# Mobile deployments
+[tool.briefcase.app.xportstore.iOS]
+requires = [
+    "toga-iOS~=0.5.0",
+    "std-nslog~=1.0.3",
+]
+
+[tool.briefcase.app.xportstore.android]
+requires = ["toga-android~=0.5.0"]
+base_theme = "Theme.MaterialComponents.Light.NoActionBar"
+build_gradle_dependencies = ["com.google.android.material:material:1.12.0"]
+
+# Web deployments
+[tool.briefcase.app.xportstore.web]
+requires = [
+    "toga-web~=0.5.0",
+]
+style_framework = "Shoelace v2.3"
