@@ -1,110 +1,137 @@
-name: Build iOS IPA (XPort Store)
+name: iOS CI (Briefcase)
 
 on:
-  workflow_dispatch:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build-ios:
-    runs-on: macos-latest
+    runs-on: macos-14
+
+    env:
+      PYTHON_VERSION: "3.11"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Show Xcode version
+        run: xcodebuild -version
 
       - name: Install Briefcase
         run: |
           python -m pip install --upgrade pip
-          pip install briefcase
+          python -m pip install briefcase
 
-      - name: Create iOS project (Briefcase)
+      # Генерация iOS-проекта (если уже сгенерирован, шаг просто ничего не ломает)
+      - name: Briefcase create iOS
         run: briefcase create iOS
 
-      - name: Build iOS project (Briefcase)
+      - name: Briefcase build iOS (Xcode project)
         run: briefcase build iOS
 
-      # --- Найти workspace/project и первую доступную схему ---
-      - name: Detect workspace/project and scheme
-        id: detect
+      - name: Locate workspace and scheme
+        id: xcode_meta
         shell: bash
         run: |
-          set -e
-          WS="$(find build -maxdepth 12 -name '*.xcworkspace' | head -n 1 || true)"
-          PRJ="$(find build -maxdepth 12 -name '*.xcodeproj'   | head -n 1 || true)"
+          set -euo pipefail
+          # Находим первый .xcworkspace внутри build/*
+          WORKSPACE_PATH="$(ls -1d build/*/Xcode/*.xcworkspace | head -n 1)"
+          if [[ -z "${WORKSPACE_PATH}" ]]; then
+            echo "No .xcworkspace found under build/*/Xcode" >&2
+            exit 1
+          fi
+          echo "workspace=$WORKSPACE_PATH" >> "$GITHUB_OUTPUT"
 
-          if [ -n "$WS" ]; then
-            echo "workspace=$WS" >> $GITHUB_OUTPUT
-            echo "Found workspace: $WS"
-            echo "== Schemes in workspace =="
-            xcodebuild -list -json -workspace "$WS" | tee list.json
-            SCHEME="$(python3 - <<'PY'
-import json
-print(json.load(open("list.json")).get("workspace",{}).get("schemes",[""])[0])
+          # Список схем (JSON) и извлечение первой доступной схемы стандартным python
+          SCHEMES_JSON="$(xcodebuild -list -json -workspace "$WORKSPACE_PATH")"
+          SCHEME_NAME="$(python - <<'PY'
+import json, sys
+data=json.load(sys.stdin)
+# Схемы могут жить и на уровне проекта и на уровне workspace; пробуем оба.
+sch=[]
+if "workspace" in data and "schemes" in data["workspace"]:
+    sch=data["workspace"]["schemes"]
+elif "project" in data and "schemes" in data["project"]:
+    sch=data["project"]["schemes"]
+print(sch[0] if sch else "")
 PY
-)"
-          elif [ -n "$PRJ" ]; then
-            echo "project=$PRJ" >> $GITHUB_OUTPUT
-            echo "Found project: $PRJ"
-            echo "== Schemes in project =="
-            xcodebuild -list -json -project "$PRJ" | tee list.json
-            SCHEME="$(python3 - <<'PY'
-import json
-print(json.load(open("list.json")).get("project",{}).get("schemes",[""])[0])
-PY
-)"
-          else
-            echo "No .xcworkspace or .xcodeproj found"; exit 1
+<<<"$SCHEMES_JSON")"
+          if [[ -z "${SCHEME_NAME}" ]]; then
+            echo "No Xcode scheme found. Make sure the scheme is shared in Xcode." >&2
+            exit 2
           fi
+          echo "scheme=$SCHEME_NAME" >> "$GITHUB_OUTPUT"
+          echo "Workspace: $WORKSPACE_PATH"
+          echo "Scheme:    $SCHEME_NAME"
 
-          if [ -z "$SCHEME" ]; then
-            echo "No schemes found"; exit 1
-          fi
-          echo "scheme=$SCHEME" >> $GITHUB_OUTPUT
-          echo "Using SCHEME: $SCHEME"
-
-      - name: Build for iOS Simulator via xcodebuild
-        shell: bash
+      - name: Archive (Release)
+        id: archive
         run: |
-          set -e
-          SCHEME="${{ steps.detect.outputs.scheme }}"
-          WS="${{ steps.detect.outputs.workspace }}"
-          PRJ="${{ steps.detect.outputs.project }}"
-          echo "SCHEME=${SCHEME}"
-          if [ -n "$WS" ]; then
-            xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination "generic/platform=iOS Simulator" build
-          else
-            xcodebuild -project  "$PRJ" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination "generic/platform=iOS Simulator" build
-          fi
+          set -euo pipefail
+          mkdir -p output
+          ARCHIVE_PATH="$PWD/output/App.xcarchive"
+          xcodebuild \
+            -workspace "${{ steps.xcode_meta.outputs.workspace }}" \
+            -scheme "${{ steps.xcode_meta.outputs.scheme }}" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            clean archive
+          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Debug — locate built .app
-        shell: bash
+      # Экспорт .ipa ИДЁТ ТОЛЬКО если настроены секреты кода-подписания.
+      # Иначе шаг пропускается, и вы получите .xcarchive как артефакт.
+      - name: Prepare ExportOptions.plist
+        if: ${{ secrets.IOS_EXPORT_METHOD != '' }}
         run: |
-          echo "== All .app found =="
-          find build -maxdepth 20 -type d -name "*.app" -print || true
+          cat > ExportOptions.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>${IOS_EXPORT_METHOD}</string> <!-- development / ad-hoc / app-store -->
+            <key>compileBitcode</key>
+            <false/>
+            <key>destination</key>
+            <string>export</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>stripSwiftSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
 
-      - name: Pack unsigned IPA (auto-detect .app)
-        shell: bash
+      - name: Export IPA
+        if: ${{ secrets.IOS_EXPORT_METHOD != '' }}
+        env:
+          IOS_EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD }}
         run: |
-          set -e
-          APP_DIR="$(find build -maxdepth 20 -type d -name '*.app' | head -n 1 || true)"
-          if [ -z "$APP_DIR" ]; then
-            echo "No .app found under build/ after xcodebuild"; exit 1
-          fi
-          echo "Using app dir: $APP_DIR"
-          APP_NAME="$(basename "$APP_DIR" .app)"
-          EXPORT_DIR="$PWD/build/export"
-          mkdir -p "$EXPORT_DIR/Payload"
-          cp -R "$APP_DIR" "$EXPORT_DIR/Payload/"
-          (cd "$EXPORT_DIR" && /usr/bin/zip -r "${APP_NAME}-unsigned.ipa" Payload)
+          set -euo pipefail
+          mkdir -p output/ipa
+          xcodebuild -exportArchive \
+            -archivePath "${{ steps.archive.outputs.archive_path }}" \
+            -exportPath "output/ipa" \
+            -exportOptionsPlist "ExportOptions.plist" \
+            -allowProvisioningUpdates
 
-      - name: Upload IPA artifact
+      - name: Upload .xcarchive
         uses: actions/upload-artifact@v4
         with:
-          name: XPortStore-unsigned
-          path: build/export/*.ipa
+          name: ios-archive
+          path: output/App.xcarchive
+
+      - name: Upload .ipa (if exists)
+        if: ${{ secrets.IOS_EXPORT_METHOD != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: output/ipa/*.ipa
