@@ -1,0 +1,52 @@
+name: Build iOS IPA (XPort Store)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Briefcase
+        run: |
+          python -m pip install --upgrade pip
+          pip install briefcase
+
+      - name: Create iOS project
+        run: |
+          briefcase create iOS
+
+      - name: Build iOS app
+        run: |
+          briefcase build iOS
+
+      - name: Export unsigned IPA (for testing)
+        run: |
+          APP_NAME="$(python - <<'PY'
+from pathlib import Path
+apps = [p.name for p in Path("build").iterdir() if p.is_dir()]
+print(apps[0])
+PY
+)"
+          EXPORT_DIR="$PWD/build/${APP_NAME}/ios/export"
+          mkdir -p "$EXPORT_DIR/Payload"
+          cp -R "$PWD/build/${APP_NAME}/ios/build/Debug-iphonesimulator/${APP_NAME}.app" "$EXPORT_DIR/Payload/"
+          cd "$EXPORT_DIR"
+          zip -r "${APP_NAME}-unsigned.ipa" Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XPortStore-unsigned
+          path: build/*/ios/export/*.ipa
