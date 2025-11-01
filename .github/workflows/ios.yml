@@ -9,12 +9,9 @@ jobs:
   build-ios:
     runs-on: macos-14
 
-    # Общие переменные для джоба
     env:
       PYTHON_VERSION: "3.11"
-      # Пробрасываем значение секрета (может быть пустой строкой)
       IOS_EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD }}
-      # Булево "есть/нет секрета" как строка 'true' / 'false'
       HAS_IOS_EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD && 'true' || 'false' }}
 
     steps:
@@ -40,29 +37,49 @@ jobs:
       - name: Briefcase build iOS (Xcode project)
         run: briefcase build iOS
 
-      - name: Locate workspace and scheme
+      # === Detect Xcode project/workspace and scheme ===
+      - name: Locate project/workspace and scheme
         id: xcode_meta
         shell: bash
         run: |
           set -euo pipefail
-          WORKSPACE_PATH="$(/bin/ls -1d build/*/Xcode/*.xcworkspace | head -n 1 || true)"
-          if [[ -z "$WORKSPACE_PATH" ]]; then
-            echo "No .xcworkspace found under build/*/Xcode" >&2
+
+          # 1) Try workspace first, then project
+          WORKSPACE_PATH="$(/bin/ls -1d build/*/Xcode/*.xcworkspace 2>/dev/null | head -n 1 || true)"
+          PROJECT_PATH="$(/bin/ls -1d build/*/Xcode/*.xcodeproj 2>/dev/null | head -n 1 || true)"
+
+          if [[ -n "$WORKSPACE_PATH" ]]; then
+            XCODE_FLAG="-workspace"
+            XCODE_PATH="$WORKSPACE_PATH"
+            XCODE_KIND="workspace"
+          elif [[ -n "$PROJECT_PATH" ]]; then
+            XCODE_FLAG="-project"
+            XCODE_PATH="$PROJECT_PATH"
+            XCODE_KIND="project"
+          else
+            echo "No .xcworkspace or .xcodeproj found under build/*/Xcode" >&2
+            /bin/ls -R build || true
             exit 1
           fi
-          echo "workspace=$WORKSPACE_PATH" >> "$GITHUB_OUTPUT"
 
-          SCHEMES_JSON="$(xcodebuild -list -json -workspace "$WORKSPACE_PATH")"
-          SCHEME_NAME="$(python -c 'import sys,json; d=json.load(sys.stdin); s=(d.get("workspace",{}).get("schemes") or d.get("project",{}).get("schemes") or []); print(s[0] if s else "")' <<<"$SCHEMES_JSON")"
+          echo "xcode_flag=$XCODE_FLAG" >> "$GITHUB_OUTPUT"
+          echo "xcode_path=$XCODE_PATH" >> "$GITHUB_OUTPUT"
+          echo "xcode_kind=$XCODE_KIND" >> "$GITHUB_OUTPUT"
+          echo "Using $XCODE_KIND: $XCODE_PATH"
+
+          # 2) Discover first available scheme
+          SCHEMES_JSON="$(xcodebuild -list -json $XCODE_FLAG "$XCODE_PATH")"
+          SCHEME_NAME="$(python -c 'import sys,json; d=json.load(sys.stdin); \
+            s=(d.get("workspace",{}).get("schemes") or d.get("project",{}).get("schemes") or []); \
+            print(s[0] if s else "")' <<<"$SCHEMES_JSON")"
 
           if [[ -z "$SCHEME_NAME" ]]; then
             echo "No Xcode scheme found. Make sure the scheme is Shared in Xcode." >&2
+            echo "$SCHEMES_JSON" >&2
             exit 2
           fi
-
           echo "scheme=$SCHEME_NAME" >> "$GITHUB_OUTPUT"
-          echo "Workspace: $WORKSPACE_PATH"
-          echo "Scheme:    $SCHEME_NAME"
+          echo "Scheme: $SCHEME_NAME"
 
       - name: Archive (Release)
         id: archive
@@ -70,16 +87,18 @@ jobs:
           set -euo pipefail
           mkdir -p output
           ARCHIVE_PATH="$PWD/output/App.xcarchive"
+
           xcodebuild \
-            -workspace "${{ steps.xcode_meta.outputs.workspace }}" \
+            ${{ steps.xcode_meta.outputs.xcode_flag }} "${{ steps.xcode_meta.outputs.xcode_path }}" \
             -scheme "${{ steps.xcode_meta.outputs.scheme }}" \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$ARCHIVE_PATH" \
             clean archive
+
           echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
 
-      # Экспорт .ipa только если секрет задан
+      # Optional IPA export if signing is configured
       - name: Prepare ExportOptions.plist
         if: ${{ env.HAS_IOS_EXPORT_METHOD == 'true' }}
         run: |
@@ -89,7 +108,7 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key>
-            <string>${IOS_EXPORT_METHOD}</string>
+            <string>${IOS_EXPORT_METHOD}</string> <!-- development / ad-hoc / app-store -->
             <key>compileBitcode</key>
             <false/>
             <key>destination</key>
