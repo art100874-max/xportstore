@@ -37,15 +37,22 @@ jobs:
       - name: Briefcase build iOS (Xcode project)
         run: briefcase build iOS
 
-      # === Detect Xcode project/workspace and scheme ===
+      # === Detect Xcode project/workspace and scheme (robust) ===
       - name: Locate project/workspace and scheme
         id: xcode_meta
         shell: bash
         run: |
           set -euo pipefail
 
-          WORKSPACE_PATH="$(/bin/ls -1d build/*/Xcode/*.xcworkspace 2>/dev/null | head -n 1 || true)"
-          PROJECT_PATH="$(/bin/ls -1d build/*/Xcode/*.xcodeproj 2>/dev/null | head -n 1 || true)"
+          echo "Searching for Xcode project/workspace under ./build ..."
+          # Ищем рекурсивно, исключая каталоги сборочных артефактов
+          WORKSPACE_PATH="$(find build -type d -iname '*.xcworkspace' \
+            -not -path '*/DerivedData/*' -not -path '*/XCBuildData/*' | head -n 1 || true)"
+          PROJECT_PATH="$(find build -type d -iname '*.xcodeproj' \
+            -not -path '*/DerivedData/*' -not -path '*/XCBuildData/*' | head -n 1 || true)"
+
+          echo "Candidate workspace: ${WORKSPACE_PATH:-<none>}"
+          echo "Candidate project:   ${PROJECT_PATH:-<none>}"
 
           if [[ -n "$WORKSPACE_PATH" ]]; then
             XCODE_FLAG="-workspace"
@@ -56,8 +63,9 @@ jobs:
             XCODE_PATH="$PROJECT_PATH"
             XCODE_KIND="project"
           else
-            echo "No .xcworkspace or .xcodeproj found under build/*/Xcode" >&2
-            /bin/ls -R build || true
+            echo "No .xcworkspace or .xcodeproj found under ./build" >&2
+            echo "Directory snapshot (depth 4) for diagnostics:" >&2
+            find build -maxdepth 4 -type d -print | sed 's/^/  /' >&2
             exit 1
           fi
 
@@ -66,13 +74,18 @@ jobs:
           echo "xcode_kind=$XCODE_KIND" >> "$GITHUB_OUTPUT"
           echo "Using $XCODE_KIND: $XCODE_PATH"
 
+          # Получаем первую доступную scheme
           SCHEMES_JSON="$(xcodebuild -list -json $XCODE_FLAG "$XCODE_PATH")"
-          SCHEME_NAME="$(python -c 'import sys,json; d=json.load(sys.stdin); s=(d.get("workspace",{}).get("schemes") or d.get("project",{}).get("schemes") or []); print(s[0] if s else "")' <<<"$SCHEMES_JSON")"
+          SCHEME_NAME="$(python -c 'import sys,json; d=json.load(sys.stdin); \
+            s=(d.get("workspace",{}).get("schemes") or d.get("project",{}).get("schemes") or []); \
+            print(s[0] if s else "")' <<<"$SCHEMES_JSON")"
+
           if [[ -z "$SCHEME_NAME" ]]; then
             echo "No Xcode scheme found. Make sure the scheme is Shared in Xcode." >&2
             echo "$SCHEMES_JSON" >&2
             exit 2
           fi
+
           echo "scheme=$SCHEME_NAME" >> "$GITHUB_OUTPUT"
           echo "Scheme: $SCHEME_NAME"
 
@@ -83,7 +96,6 @@ jobs:
           mkdir -p output logs
           ARCHIVE_PATH="$PWD/output/App.xcarchive"
 
-          # Собираем архив БЕЗ подписи — чтобы пройти CI без настроек код-сайнинга
           xcodebuild \
             ${{ steps.xcode_meta.outputs.xcode_flag }} "${{ steps.xcode_meta.outputs.xcode_path }}" \
             -scheme "${{ steps.xcode_meta.outputs.scheme }}" \
@@ -96,7 +108,6 @@ jobs:
 
           echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
 
-      # Всегда сохраняем лог сборки, даже если упало
       - name: Upload xcodebuild log
         if: always()
         uses: actions/upload-artifact@v4
@@ -105,7 +116,6 @@ jobs:
           path: logs/xcodebuild-archive.log
           if-no-files-found: warn
 
-      # Экспорт .ipa возможен только при настроенной подписи
       - name: Prepare ExportOptions.plist
         if: ${{ env.HAS_IOS_EXPORT_METHOD == 'true' }}
         run: |
@@ -115,7 +125,7 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key>
-            <string>${IOS_EXPORT_METHOD}</string> <!-- development / ad-hoc / app-store -->
+            <string>${IOS_EXPORT_METHOD}</string>
             <key>compileBitcode</key>
             <false/>
             <key>destination</key>
