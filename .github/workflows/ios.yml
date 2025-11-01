@@ -29,40 +29,48 @@ jobs:
       - name: Build iOS project (Briefcase)
         run: briefcase build iOS
 
-      # Сборка симуляторной .app через xcodebuild (без подписи)
-      - name: Build for iOS Simulator (xcodebuild)
+      - name: Debug — locate Xcode files
+        shell: bash
+        run: |
+          echo "== Look for workspace/project =="
+          find build -maxdepth 12 -name "*.xcworkspace" -print
+          find build -maxdepth 12 -name "*.xcodeproj" -print || true
+
+      - name: Build for iOS Simulator via xcodebuild
         shell: bash
         run: |
           set -e
-          PROJ="$(find build -maxdepth 3 -name '*.xcodeproj' | head -n 1)"
-          if [ -z "$PROJ" ]; then
-            echo "Xcode project not found under build/"; exit 1
+          WS="$(find build -maxdepth 12 -name '*.xcworkspace' | head -n 1 || true)"
+          PRJ="$(find build -maxdepth 12 -name '*.xcodeproj' | head -n 1 || true)"
+          if [ -n "$WS" ]; then
+            echo "Using workspace: $WS"
+            SCHEME="$(basename "$WS" .xcworkspace)"
+            xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination "generic/platform=iOS Simulator" build
+          elif [ -n "$PRJ" ]; then
+            echo "Using project: $PRJ"
+            SCHEME="$(basename "$PRJ" .xcodeproj)"
+            xcodebuild -project "$PRJ" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination "generic/platform=iOS Simulator" build
+          else
+            echo "No .xcworkspace or .xcodeproj found under build/"
+            exit 1
           fi
-          echo "Using Xcode project: $PROJ"
-          SCHEME="$(basename "$PROJ" .xcodeproj)"
-          echo "Using scheme: $SCHEME"
 
-          xcodebuild \
-            -project "$PROJ" \
-            -scheme "$SCHEME" \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination "generic/platform=iOS Simulator" \
-            build
+      - name: Debug — locate built .app
+        shell: bash
+        run: |
+          echo "== All .app found =="
+          find build -maxdepth 20 -type d -name "*.app" -print || true
 
-      # Локализуем .app и пакуем в .ipa
       - name: Pack unsigned IPA (auto-detect .app)
         shell: bash
         run: |
           set -e
-          echo "Searching for .app…"
-          APP_DIR="$(find build -maxdepth 12 -type d -name '*.app' | head -n 1 || true)"
+          APP_DIR="$(find build -maxdepth 20 -type d -name '*.app' | head -n 1 || true)"
           if [ -z "$APP_DIR" ]; then
-            echo "No .app found under build/"; exit 1
+            echo "No .app found under build/ after xcodebuild"; exit 1
           fi
           echo "Using app dir: $APP_DIR"
           APP_NAME="$(basename "$APP_DIR" .app)"
-
           EXPORT_DIR="$PWD/build/export"
           mkdir -p "$EXPORT_DIR/Payload"
           cp -R "$APP_DIR" "$EXPORT_DIR/Payload/"
