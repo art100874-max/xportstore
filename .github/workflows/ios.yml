@@ -44,7 +44,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1) Try workspace first, then project
           WORKSPACE_PATH="$(/bin/ls -1d build/*/Xcode/*.xcworkspace 2>/dev/null | head -n 1 || true)"
           PROJECT_PATH="$(/bin/ls -1d build/*/Xcode/*.xcodeproj 2>/dev/null | head -n 1 || true)"
 
@@ -67,12 +66,8 @@ jobs:
           echo "xcode_kind=$XCODE_KIND" >> "$GITHUB_OUTPUT"
           echo "Using $XCODE_KIND: $XCODE_PATH"
 
-          # 2) Discover first available scheme
           SCHEMES_JSON="$(xcodebuild -list -json $XCODE_FLAG "$XCODE_PATH")"
-          SCHEME_NAME="$(python -c 'import sys,json; d=json.load(sys.stdin); \
-            s=(d.get("workspace",{}).get("schemes") or d.get("project",{}).get("schemes") or []); \
-            print(s[0] if s else "")' <<<"$SCHEMES_JSON")"
-
+          SCHEME_NAME="$(python -c 'import sys,json; d=json.load(sys.stdin); s=(d.get("workspace",{}).get("schemes") or d.get("project",{}).get("schemes") or []); print(s[0] if s else "")' <<<"$SCHEMES_JSON")"
           if [[ -z "$SCHEME_NAME" ]]; then
             echo "No Xcode scheme found. Make sure the scheme is Shared in Xcode." >&2
             echo "$SCHEMES_JSON" >&2
@@ -81,24 +76,36 @@ jobs:
           echo "scheme=$SCHEME_NAME" >> "$GITHUB_OUTPUT"
           echo "Scheme: $SCHEME_NAME"
 
-      - name: Archive (Release)
+      - name: Archive (Release, unsigned)
         id: archive
         run: |
           set -euo pipefail
-          mkdir -p output
+          mkdir -p output logs
           ARCHIVE_PATH="$PWD/output/App.xcarchive"
 
+          # Собираем архив БЕЗ подписи — чтобы пройти CI без настроек код-сайнинга
           xcodebuild \
             ${{ steps.xcode_meta.outputs.xcode_flag }} "${{ steps.xcode_meta.outputs.xcode_path }}" \
             -scheme "${{ steps.xcode_meta.outputs.scheme }}" \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$ARCHIVE_PATH" \
-            clean archive
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            clean archive | tee logs/xcodebuild-archive.log
 
           echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
 
-      # Optional IPA export if signing is configured
+      # Всегда сохраняем лог сборки, даже если упало
+      - name: Upload xcodebuild log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-archive-log
+          path: logs/xcodebuild-archive.log
+          if-no-files-found: warn
+
+      # Экспорт .ipa возможен только при настроенной подписи
       - name: Prepare ExportOptions.plist
         if: ${{ env.HAS_IOS_EXPORT_METHOD == 'true' }}
         run: |
@@ -133,13 +140,14 @@ jobs:
             -allowProvisioningUpdates
 
       - name: Upload .xcarchive
+        if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: ios-archive
           path: output/App.xcarchive
 
       - name: Upload .ipa (if exists)
-        if: ${{ env.HAS_IOS_EXPORT_METHOD == 'true' }}
+        if: ${{ env.HAS_IOS_EXPORT_METHOD == 'true' && success() }}
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
