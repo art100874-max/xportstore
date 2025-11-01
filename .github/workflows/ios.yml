@@ -26,35 +26,28 @@ jobs:
       - name: Create iOS project (Briefcase)
         run: briefcase create iOS
 
-      - name: Build iOS project (Briefcase)
+      - name: Build iOS for simulator (Briefcase)
         run: briefcase build iOS
 
-      - name: Archive with xcodebuild (generic iOS device)
+      - name: Debug — list build tree
+        run: ls -R build || true
+
+      - name: Pack unsigned IPA from simulator .app
         shell: bash
         run: |
           set -e
           APP_NAME="$(ls -1 build | head -n 1)"
-          PROJ="build/${APP_NAME}/ios/${APP_NAME}.xcodeproj"
-          SCHEME="${APP_NAME}"
-          ARCHIVE_DIR="$PWD/build/${APP_NAME}/ios/build"
-          ARCHIVE_PATH="${ARCHIVE_DIR}/${APP_NAME}.xcarchive"
+          SIM_APP_DIR="$PWD/build/${APP_NAME}/ios/build/Debug-iphonesimulator"
+          if [ ! -d "$SIM_APP_DIR" ]; then
+            echo "Simulator build dir not found: $SIM_APP_DIR"
+            exit 1
+          fi
+          APP_PATH="$(ls -1 "$SIM_APP_DIR"/*.app | head -n 1)"
+          echo "Using app: $APP_PATH"
 
-          xcodebuild -project "$PROJ" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            clean archive \
-            -archivePath "$ARCHIVE_PATH"
-
-      - name: Export unsigned IPA (pack from .xcarchive)
-        shell: bash
-        run: |
-          set -e
-          APP_NAME="$(ls -1 build | head -n 1)"
-          ARCHIVE_PATH="$PWD/build/${APP_NAME}/ios/build/${APP_NAME}.xcarchive"
           EXPORT_DIR="$PWD/build/${APP_NAME}/ios/export"
           mkdir -p "$EXPORT_DIR/Payload"
-          cp -R "$ARCHIVE_PATH/Products/Applications/${APP_NAME}.app" "$EXPORT_DIR/Payload/"
+          cp -R "$APP_PATH" "$EXPORT_DIR/Payload/"
           cd "$EXPORT_DIR"
           /usr/bin/zip -r "${APP_NAME}-unsigned.ipa" Payload
 
