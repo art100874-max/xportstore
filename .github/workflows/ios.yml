@@ -24,24 +24,16 @@ jobs:
           pip install briefcase
 
       - name: Create iOS project (Briefcase)
-        run: |
-          briefcase create iOS
+        run: briefcase create iOS
 
       - name: Build iOS project (Briefcase)
-        run: |
-          briefcase build iOS
+        run: briefcase build iOS
 
-      # ---- Archive with xcodebuild for generic iOS device (no simulator) ----
-      - name: Archive (xcodebuild)
+      - name: Archive with xcodebuild (generic iOS device)
+        shell: bash
         run: |
           set -e
-          APP_NAME="$(python - <<'PY'
-from pathlib import Path
-# Папка приложения внутри build/* (Briefcase создаёт одну)
-apps=[p.name for p in Path("build").iterdir() if p.is_dir()]
-print(apps[0])
-PY
-)"
+          APP_NAME="$(ls -1 build | head -n 1)"
           PROJ="build/${APP_NAME}/ios/${APP_NAME}.xcodeproj"
           SCHEME="${APP_NAME}"
           ARCHIVE_DIR="$PWD/build/${APP_NAME}/ios/build"
@@ -54,16 +46,11 @@ PY
             clean archive \
             -archivePath "$ARCHIVE_PATH"
 
-      # ---- Pack unsigned IPA from .xcarchive (для проверки пайплайна) ----
-      - name: Export unsigned IPA
+      - name: Export unsigned IPA (pack from .xcarchive)
+        shell: bash
         run: |
           set -e
-          APP_NAME="$(python - <<'PY'
-from pathlib import Path
-apps=[p.name for p in Path("build").iterdir() if p.is_dir()]
-print(apps[0])
-PY
-)"
+          APP_NAME="$(ls -1 build | head -n 1)"
           ARCHIVE_PATH="$PWD/build/${APP_NAME}/ios/build/${APP_NAME}.xcarchive"
           EXPORT_DIR="$PWD/build/${APP_NAME}/ios/export"
           mkdir -p "$EXPORT_DIR/Payload"
