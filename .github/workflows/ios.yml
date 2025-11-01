@@ -29,7 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install briefcase
 
-      # Генерация iOS-проекта (если уже сгенерирован, шаг просто ничего не ломает)
+      # Генерируем iOS-проект (если уже есть — шаг безопасно пройдёт)
       - name: Briefcase create iOS
         run: briefcase create iOS
 
@@ -41,32 +41,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Находим первый .xcworkspace внутри build/*
-          WORKSPACE_PATH="$(ls -1d build/*/Xcode/*.xcworkspace | head -n 1)"
-          if [[ -z "${WORKSPACE_PATH}" ]]; then
+          # Находим первый .xcworkspace
+          WORKSPACE_PATH="$(/bin/ls -1d build/*/Xcode/*.xcworkspace | head -n 1 || true)"
+          if [[ -z "$WORKSPACE_PATH" ]]; then
             echo "No .xcworkspace found under build/*/Xcode" >&2
             exit 1
           fi
           echo "workspace=$WORKSPACE_PATH" >> "$GITHUB_OUTPUT"
 
-          # Список схем (JSON) и извлечение первой доступной схемы стандартным python
+          # Берём первую доступную схему
           SCHEMES_JSON="$(xcodebuild -list -json -workspace "$WORKSPACE_PATH")"
-          SCHEME_NAME="$(python - <<'PY'
-import json, sys
-data=json.load(sys.stdin)
-# Схемы могут жить и на уровне проекта и на уровне workspace; пробуем оба.
-sch=[]
-if "workspace" in data and "schemes" in data["workspace"]:
-    sch=data["workspace"]["schemes"]
-elif "project" in data and "schemes" in data["project"]:
-    sch=data["project"]["schemes"]
-print(sch[0] if sch else "")
-PY
-<<<"$SCHEMES_JSON")"
-          if [[ -z "${SCHEME_NAME}" ]]; then
-            echo "No Xcode scheme found. Make sure the scheme is shared in Xcode." >&2
+          SCHEME_NAME="$(python -c 'import sys,json; d=json.load(sys.stdin); s=(d.get("workspace",{}).get("schemes") or d.get("project",{}).get("schemes") or []); print(s[0] if s else "")' <<<"$SCHEMES_JSON")"
+
+          if [[ -z "$SCHEME_NAME" ]]; then
+            echo "No Xcode scheme found. Make sure the scheme is Shared in Xcode." >&2
             exit 2
           fi
+
           echo "scheme=$SCHEME_NAME" >> "$GITHUB_OUTPUT"
           echo "Workspace: $WORKSPACE_PATH"
           echo "Scheme:    $SCHEME_NAME"
@@ -86,10 +77,12 @@ PY
             clean archive
           echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
 
-      # Экспорт .ipa ИДЁТ ТОЛЬКО если настроены секреты кода-подписания.
-      # Иначе шаг пропускается, и вы получите .xcarchive как артефакт.
+      # Экспорт .ipa опционален — только если задан секрет IOS_EXPORT_METHOD:
+      # development / ad-hoc / app-store
       - name: Prepare ExportOptions.plist
-        if: ${{ secrets.IOS_EXPORT_METHOD != '' }}
+        if: ${{ secrets.IOS_EXPORT_METHOD }}
+        env:
+          IOS_EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD }}
         run: |
           cat > ExportOptions.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -97,7 +90,7 @@ PY
           <plist version="1.0">
           <dict>
             <key>method</key>
-            <string>${IOS_EXPORT_METHOD}</string> <!-- development / ad-hoc / app-store -->
+            <string>${IOS_EXPORT_METHOD}</string>
             <key>compileBitcode</key>
             <false/>
             <key>destination</key>
@@ -111,9 +104,7 @@ PY
           PLIST
 
       - name: Export IPA
-        if: ${{ secrets.IOS_EXPORT_METHOD != '' }}
-        env:
-          IOS_EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD }}
+        if: ${{ secrets.IOS_EXPORT_METHOD }}
         run: |
           set -euo pipefail
           mkdir -p output/ipa
@@ -130,7 +121,7 @@ PY
           path: output/App.xcarchive
 
       - name: Upload .ipa (if exists)
-        if: ${{ secrets.IOS_EXPORT_METHOD != '' }}
+        if: ${{ secrets.IOS_EXPORT_METHOD }}
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
