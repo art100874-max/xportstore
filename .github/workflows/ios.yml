@@ -29,30 +29,57 @@ jobs:
       - name: Build iOS project (Briefcase)
         run: briefcase build iOS
 
-      - name: Debug — locate Xcode files
+      # --- Найти workspace/project и первую доступную схему ---
+      - name: Detect workspace/project and scheme
+        id: detect
         shell: bash
         run: |
-          echo "== Look for workspace/project =="
-          find build -maxdepth 12 -name "*.xcworkspace" -print
-          find build -maxdepth 12 -name "*.xcodeproj" -print || true
+          set -e
+          WS="$(find build -maxdepth 12 -name '*.xcworkspace' | head -n 1 || true)"
+          PRJ="$(find build -maxdepth 12 -name '*.xcodeproj'   | head -n 1 || true)"
+
+          if [ -n "$WS" ]; then
+            echo "workspace=$WS" >> $GITHUB_OUTPUT
+            echo "Found workspace: $WS"
+            echo "== Schemes in workspace =="
+            xcodebuild -list -json -workspace "$WS" | tee list.json
+            SCHEME="$(python3 - <<'PY'
+import json
+print(json.load(open("list.json")).get("workspace",{}).get("schemes",[""])[0])
+PY
+)"
+          elif [ -n "$PRJ" ]; then
+            echo "project=$PRJ" >> $GITHUB_OUTPUT
+            echo "Found project: $PRJ"
+            echo "== Schemes in project =="
+            xcodebuild -list -json -project "$PRJ" | tee list.json
+            SCHEME="$(python3 - <<'PY'
+import json
+print(json.load(open("list.json")).get("project",{}).get("schemes",[""])[0])
+PY
+)"
+          else
+            echo "No .xcworkspace or .xcodeproj found"; exit 1
+          fi
+
+          if [ -z "$SCHEME" ]; then
+            echo "No schemes found"; exit 1
+          fi
+          echo "scheme=$SCHEME" >> $GITHUB_OUTPUT
+          echo "Using SCHEME: $SCHEME"
 
       - name: Build for iOS Simulator via xcodebuild
         shell: bash
         run: |
           set -e
-          WS="$(find build -maxdepth 12 -name '*.xcworkspace' | head -n 1 || true)"
-          PRJ="$(find build -maxdepth 12 -name '*.xcodeproj' | head -n 1 || true)"
+          SCHEME="${{ steps.detect.outputs.scheme }}"
+          WS="${{ steps.detect.outputs.workspace }}"
+          PRJ="${{ steps.detect.outputs.project }}"
+          echo "SCHEME=${SCHEME}"
           if [ -n "$WS" ]; then
-            echo "Using workspace: $WS"
-            SCHEME="$(basename "$WS" .xcworkspace)"
             xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination "generic/platform=iOS Simulator" build
-          elif [ -n "$PRJ" ]; then
-            echo "Using project: $PRJ"
-            SCHEME="$(basename "$PRJ" .xcodeproj)"
-            xcodebuild -project "$PRJ" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination "generic/platform=iOS Simulator" build
           else
-            echo "No .xcworkspace or .xcodeproj found under build/"
-            exit 1
+            xcodebuild -project  "$PRJ" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination "generic/platform=iOS Simulator" build
           fi
 
       - name: Debug — locate built .app
