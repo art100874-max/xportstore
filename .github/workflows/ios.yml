@@ -26,33 +26,50 @@ jobs:
       - name: Create iOS project (Briefcase)
         run: briefcase create iOS
 
-      - name: Build iOS for simulator (Briefcase)
+      - name: Build iOS project (Briefcase)
         run: briefcase build iOS
 
-      - name: Debug — list build tree
-        run: ls -R build || true
-
-      - name: Pack unsigned IPA from simulator .app
+      # Сборка симуляторной .app через xcodebuild (без подписи)
+      - name: Build for iOS Simulator (xcodebuild)
         shell: bash
         run: |
           set -e
-          APP_NAME="$(ls -1 build | head -n 1)"
-          SIM_APP_DIR="$PWD/build/${APP_NAME}/ios/build/Debug-iphonesimulator"
-          if [ ! -d "$SIM_APP_DIR" ]; then
-            echo "Simulator build dir not found: $SIM_APP_DIR"
-            exit 1
+          PROJ="$(find build -maxdepth 3 -name '*.xcodeproj' | head -n 1)"
+          if [ -z "$PROJ" ]; then
+            echo "Xcode project not found under build/"; exit 1
           fi
-          APP_PATH="$(ls -1 "$SIM_APP_DIR"/*.app | head -n 1)"
-          echo "Using app: $APP_PATH"
+          echo "Using Xcode project: $PROJ"
+          SCHEME="$(basename "$PROJ" .xcodeproj)"
+          echo "Using scheme: $SCHEME"
 
-          EXPORT_DIR="$PWD/build/${APP_NAME}/ios/export"
+          xcodebuild \
+            -project "$PROJ" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            build
+
+      # Локализуем .app и пакуем в .ipa
+      - name: Pack unsigned IPA (auto-detect .app)
+        shell: bash
+        run: |
+          set -e
+          echo "Searching for .app…"
+          APP_DIR="$(find build -maxdepth 12 -type d -name '*.app' | head -n 1 || true)"
+          if [ -z "$APP_DIR" ]; then
+            echo "No .app found under build/"; exit 1
+          fi
+          echo "Using app dir: $APP_DIR"
+          APP_NAME="$(basename "$APP_DIR" .app)"
+
+          EXPORT_DIR="$PWD/build/export"
           mkdir -p "$EXPORT_DIR/Payload"
-          cp -R "$APP_PATH" "$EXPORT_DIR/Payload/"
-          cd "$EXPORT_DIR"
-          /usr/bin/zip -r "${APP_NAME}-unsigned.ipa" Payload
+          cp -R "$APP_DIR" "$EXPORT_DIR/Payload/"
+          (cd "$EXPORT_DIR" && /usr/bin/zip -r "${APP_NAME}-unsigned.ipa" Payload)
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: XPortStore-unsigned
-          path: build/*/ios/export/*.ipa
+          path: build/export/*.ipa
